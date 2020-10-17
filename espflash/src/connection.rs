@@ -120,16 +120,22 @@ impl Connection {
     ) -> Result<u32, Error> {
         self.write_command(command, data, check)?;
 
-        match self.read_response()? {
-            Some(response) if response.return_op == command as u8 => {
-                if response.status == 1 {
-                    Err(Error::RomError(RomError::from(response.error)))
-                } else {
-                    Ok(response.value)
+        for _ in 0..100 {
+            match self.read_response()? {
+                Some(response) if response.return_op == command as u8 => {
+                    if response.status == 1 {
+                        let _error = self.flush();
+                        return Err(Error::RomError(RomError::from(response.error)));
+                    } else {
+                        return Ok(response.value);
+                    }
+                }
+                _ => {
+                    continue;
                 }
             }
-            _ => Err(Error::ConnectionFailed),
         }
+        Err(Error::ConnectionFailed)
     }
 
     fn read(&mut self) -> Result<Vec<u8>, Error> {
