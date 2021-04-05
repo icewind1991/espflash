@@ -549,6 +549,10 @@ impl Flasher {
         self.connection.set_baud(speed)?;
         Ok(())
     }
+
+    pub fn into_serial(self) -> Box<dyn SerialPort> {
+        self.connection.into_serial()
+    }
 }
 
 fn get_erase_size(offset: usize, size: usize) -> usize {

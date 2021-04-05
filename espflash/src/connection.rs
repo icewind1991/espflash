@@ -142,6 +142,10 @@ impl Connection {
         self.serial.flush()?;
         Ok(())
     }
+
+    pub fn into_serial(self) -> Box<dyn SerialPort> {
+        self.serial
+    }
 }
 
 pub trait LazyBytes<W: Write> {

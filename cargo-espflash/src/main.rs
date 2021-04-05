@@ -8,6 +8,10 @@ use color_eyre::{eyre::WrapErr, Report, Result};
 use espflash::{Chip, Config, Flasher};
 use pico_args::Arguments;
 use serial::{BaudRate, SerialPort};
+use std::io::{stdout, ErrorKind, Read, Write};
+use std::time::Duration;
+use termion::async_stdin;
+use termion::raw::IntoRawMode;
 
 fn main() -> Result<()> {
     let args = parse_args().expect("Unable to parse command-line arguments");
@@ -67,12 +71,22 @@ fn main() -> Result<()> {
 
     let path = get_artifact_path(target, args.release, &args.example)
         .expect("Could not find the build artifact path");
-    let elf_data = read(&path)?;
+    let elf_data = read(&path).wrap_err_with(|| {
+        format!(
+            "Failed to open artifact file {}",
+            path.as_os_str().to_string_lossy()
+        )
+    })?;
 
     if args.ram {
         flasher.load_elf_to_ram(&elf_data)?;
     } else {
         flasher.load_elf_to_flash(&elf_data)?;
+    }
+
+    if args.monitor {
+        let serial = flasher.into_serial();
+        monitor(serial)?;
     }
 
     Ok(())
@@ -84,6 +98,7 @@ struct AppArgs {
     board_info: bool,
     ram: bool,
     release: bool,
+    monitor: bool,
     example: Option<String>,
     features: Option<String>,
     chip: Option<String>,
@@ -98,6 +113,7 @@ fn usage() -> Result<()> {
       [--board-info] \
       [--ram] \
       [--release] \
+      [--monitor] \
       [--example EXAMPLE] \
       [--tool {{cargo,xargo,xbuild}}] \
       [--chip {{esp32,esp8266}}] \
@@ -129,6 +145,7 @@ fn parse_args() -> Result<AppArgs> {
         board_info: args.contains("--board-info"),
         ram: args.contains("--ram"),
         release: args.contains("--release"),
+        monitor: args.contains("--monitor"),
         example: args.opt_value_from_str("--example")?,
         features: args.opt_value_from_str("--features")?,
         chip: args.opt_value_from_str("--chip")?,
@@ -245,4 +262,42 @@ fn exit_with_process_status(status: ExitStatus) -> ! {
     let code = status.code().unwrap_or(1);
 
     exit(code)
+}
+
+fn monitor(mut serial: Box<dyn SerialPort>) -> Result<()> {
+    let mut buff = [0; 128];
+    serial.set_timeout(Duration::from_millis(5))?;
+
+    let mut stdin = async_stdin().bytes();
+    let stdout = stdout().into_raw_mode()?;
+    let mut stdout = stdout.lock();
+    loop {
+        let read = match serial.read(&mut buff) {
+            Ok(count) => Ok(count),
+            Err(e) if e.kind() == ErrorKind::TimedOut => Ok(0),
+            err => err,
+        }?;
+        if read > 0 {
+            let data: &[u8] = &buff[0..read];
+            for (i, part) in data
+                .split(|&byte| byte == b'\n' || byte == b'\r')
+                .enumerate()
+            {
+                if i > 0 {
+                    stdout.write(&b"\r\n"[..])?;
+                }
+                stdout.write(part).ok();
+            }
+            stdout.flush()?;
+        }
+        if let Some(Ok(byte)) = stdin.next() {
+            if byte == 3 {
+                // ctrl-c
+                break;
+            }
+            serial.write(&[byte])?;
+            serial.flush()?;
+        }
+    }
+    Ok(())
 }
