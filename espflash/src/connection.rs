@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::encoder::SlipEncoder;
 use crate::error::{Error, RomError};
+use crate::flasher::Command;
 use binread::io::Cursor;
 use binread::{BinRead, BinReaderExt};
 use serial::{BaudRate, SerialPort, SerialPortSettings};
@@ -87,12 +88,14 @@ impl Connection {
     pub fn read_response(&mut self) -> Result<Option<CommandResponse>, Error> {
         let response = self.read()?;
         if response.len() < 10 {
+            println!("empty response.",);
             return Ok(None);
         }
 
         let mut cursor = Cursor::new(response);
         let header = cursor.read_le()?;
 
+        println!("received response: {:?}.", header);
         Ok(Some(header))
     }
 
@@ -102,6 +105,7 @@ impl Connection {
         data: impl LazyBytes<Box<dyn SerialPort>>,
         check: u32,
     ) -> Result<(), Error> {
+        println!("send command: {:?}.", Command::pretty(command).unwrap());
         let mut encoder = SlipEncoder::new(&mut self.serial)?;
         encoder.write(&[0])?;
         encoder.write(&[command])?;
@@ -120,7 +124,7 @@ impl Connection {
     ) -> Result<u32, Error> {
         self.write_command(command, data, check)?;
 
-        match self.read_response()? {
+        let res = match self.read_response()? {
             Some(response) if response.return_op == command as u8 => {
                 if response.status == 1 {
                     Err(Error::RomError(RomError::from(response.error)))
@@ -129,7 +133,10 @@ impl Connection {
                 }
             }
             _ => Err(Error::ConnectionFailed),
-        }
+        };
+
+        println!("res: {:?}", res);
+        res
     }
 
     fn read(&mut self) -> Result<Vec<u8>, Error> {

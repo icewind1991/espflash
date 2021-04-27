@@ -100,7 +100,7 @@ fn usage() -> Result<()> {
       [--release] \
       [--example EXAMPLE] \
       [--tool {{cargo,xargo,xbuild}}] \
-      [--chip {{esp32,esp8266}}] \
+      [--chip {{esp32,esp8266,esp32c3}}] \
       [--speed BAUD] \
       <serial>";
 

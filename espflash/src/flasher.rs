@@ -10,6 +10,7 @@ use bytemuck::__core::time::Duration;
 use bytemuck::{bytes_of, Pod, Zeroable};
 use indicatif::{ProgressBar, ProgressStyle};
 use serial::{BaudRate, SerialPort};
+use std::iter::FromIterator;
 use std::thread::sleep;
 
 type Encoder<'a> = SlipEncoder<'a, Box<dyn SerialPort>>;
@@ -21,13 +22,12 @@ const FLASH_SECTORS_PER_BLOCK: usize = FLASH_SECTOR_SIZE / FLASH_BLOCK_SIZE;
 const FLASH_WRITE_SIZE: usize = 0x400;
 
 // registers used for chip detect
-const UART_DATE_REG_ADDR: u32 = 0x60000078;
-const UART_DATE_REG2_ADDR: u32 = 0x3f400074;
+const CHIP_DETECT_MAGIC_REG_ADDR: u32 = 0x40001000;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 #[allow(dead_code)]
-enum Command {
+pub enum Command {
     FlashBegin = 0x02,
     FlashData = 0x03,
     FlashEnd = 0x04,
@@ -40,6 +40,26 @@ enum Command {
     SpiSetParams = 0x0B,
     SpiAttach = 0x0D,
     ChangeBaud = 0x0F,
+}
+
+impl Command {
+    pub(crate) fn pretty(src: u8) -> Option<Command> {
+        Some(match src {
+            0x02 => Command::FlashBegin,
+            0x03 => Command::FlashData,
+            0x04 => Command::FlashEnd,
+            0x05 => Command::MemBegin,
+            0x06 => Command::MemEnd,
+            0x07 => Command::MemData,
+            0x08 => Command::Sync,
+            0x09 => Command::WriteReg,
+            0x0a => Command::ReadReg,
+            0x0B => Command::SpiSetParams,
+            0x0D => Command::SpiAttach,
+            0x0F => Command::ChangeBaud,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +161,16 @@ struct BeginParams {
 
 #[derive(Zeroable, Pod, Copy, Clone, Debug)]
 #[repr(C)]
+struct BeginParamsWithEncrypt {
+    size: u32,
+    blocks: u32,
+    block_size: u32,
+    offset: u32,
+    encrypt: u32,
+}
+
+#[derive(Zeroable, Pod, Copy, Clone, Debug)]
+#[repr(C)]
 struct WriteRegParams {
     addr: u32,
     value: u32,
@@ -187,6 +217,12 @@ impl Flasher {
                         flasher.change_baud(b)?;
                     }
                 }
+                Chip::Esp32c3 => {
+                    if b.speed() > BaudRate::Baud115200.speed() {
+                        println!("WARN setting baud rate higher than 115200 can cause issues.");
+                        flasher.change_baud(b)?;
+                    }
+                }
             }
         }
 
@@ -209,9 +245,10 @@ impl Flasher {
     }
 
     fn chip_detect(&mut self) -> Result<(), Error> {
-        let reg1 = self.read_reg(UART_DATE_REG_ADDR)?;
-        let reg2 = self.read_reg(UART_DATE_REG2_ADDR)?;
-        let chip = Chip::from_regs(reg1, reg2).ok_or(Error::UnrecognizedChip)?;
+        // let reg1 = self.read_reg(UART_DATE_REG1_ADDR)?;
+        // let reg2 = self.read_reg(UART_DATE_REG2_ADDR)?;
+        let val = self.read_reg(CHIP_DETECT_MAGIC_REG_ADDR)?;
+        let chip = Chip::from_magic_value(val).ok_or(Error::UnrecognizedChip)?;
 
         self.chip = chip;
         Ok(())
@@ -286,8 +323,14 @@ impl Flasher {
             block_size,
             offset,
         };
-        self.connection
-            .command(command as u8, bytes_of(&params), 0)?;
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(bytes_of(&params));
+        if let Command::FlashBegin = command {
+            if let Chip::Esp32c3 = self.chip {
+                data.extend_from_slice(bytes_of(&0u32));
+            }
+        }
+        self.connection.command(command as u8, &data[..], 0)?;
         Ok(())
     }
 
@@ -350,6 +393,11 @@ impl Flasher {
                 self.begin_command(Command::FlashBegin, 0, 0, FLASH_WRITE_SIZE as u32, 0)?;
             }
             Chip::Esp32 => {
+                let spi_params = spi_attach_params.encode();
+                self.connection
+                    .command(Command::SpiAttach as u8, spi_params.as_slice(), 0)?;
+            }
+            Chip::Esp32c3 => {
                 let spi_params = spi_attach_params.encode();
                 self.connection
                     .command(Command::SpiAttach as u8, spi_params.as_slice(), 0)?;
@@ -502,6 +550,7 @@ impl Flasher {
 
             let erase_size = match self.chip {
                 Chip::Esp32 => segment.data.len() as u32,
+                Chip::Esp32c3 => segment.data.len() as u32,
                 Chip::Esp8266 => get_erase_size(addr as usize, segment.data.len()) as u32,
             };
 

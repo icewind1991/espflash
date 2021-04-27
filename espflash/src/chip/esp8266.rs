@@ -16,8 +16,7 @@ const IROM_MAP_END: u32 = 0x40300000;
 pub struct Esp8266;
 
 impl ChipType for Esp8266 {
-    const DATE_REG1_VALUE: u32 = 0x00062000;
-    const DATE_REG2_VALUE: u32 = 0;
+    const CHIP_DETECT_MAGIC_VALUE: u32 = 0xfff0c101;
     const SPI_REGISTERS: SpiRegisters = SpiRegisters {
         base: 0x60000200,
         usr_offset: 0x1c,
